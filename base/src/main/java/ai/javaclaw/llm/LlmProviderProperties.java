@@ -21,6 +21,8 @@ import java.util.Map;
  *         provider: ollama
  *         base-url: http://localhost:11434
  *         model: llama3.2
+ *         context-length: 16384
+ *         thinking: false
  * </pre>
  */
 @ConfigurationProperties(prefix = "agent.llm")
@@ -45,6 +47,10 @@ public class LlmProviderProperties {
         private String baseUrl;
         private String apiKey;
         private String model;
+        /** Context window in tokens; only applied by providers that let the client choose it (Ollama). */
+        private Integer contextLength;
+        /** Whether a reasoning model may think before answering; unset leaves it to the model. Ollama only. */
+        private Boolean thinking;
 
         public ProviderConfig() {
         }
@@ -86,6 +92,22 @@ public class LlmProviderProperties {
 
         public void setModel(String model) {
             this.model = model;
+        }
+
+        public Integer getContextLength() {
+            return contextLength;
+        }
+
+        public void setContextLength(Integer contextLength) {
+            this.contextLength = contextLength;
+        }
+
+        public Boolean getThinking() {
+            return thinking;
+        }
+
+        public void setThinking(Boolean thinking) {
+            this.thinking = thinking;
         }
     }
 }

@@ -9,6 +9,7 @@ import ai.javaclaw.tools.AgentEnvironment;
 import ai.javaclaw.tools.AutoDiscoveredTool;
 import ai.javaclaw.tools.CheckListTool;
 import ai.javaclaw.tools.McpTool;
+import ai.javaclaw.tools.UnknownToolCallbackResolver;
 import ai.javaclaw.tools.JavaClawTaskTool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -63,6 +64,7 @@ public class MainChatClientProvider {
     private final Set<AutoDiscoveredTool<?>> autoDiscoveredTools;
     private final Resource workspace;
     private final List<Resource> skillPaths;
+    private final boolean subagentsEnabled;
 
     private final ChatClient chatClient;
 
@@ -75,7 +77,8 @@ public class MainChatClientProvider {
                                   SubagentStore subagentStore,
                                   Set<AutoDiscoveredTool<?>> autoDiscoveredTools,
                                   @Value("${agent.workspace:Unknown}") Resource workspace,
-                                  @Value("${agent.skills.paths}") List<Resource> skillPaths) {
+                                  @Value("${agent.skills.paths}") List<Resource> skillPaths,
+                                  @Value("${agent.subagents.enabled:false}") boolean subagentsEnabled) {
         this.registry = registry;
         this.chatMemory = chatMemory;
         this.toolSearchAdvisorProvider = toolSearchAdvisorProvider;
@@ -86,6 +89,7 @@ public class MainChatClientProvider {
         this.autoDiscoveredTools = autoDiscoveredTools;
         this.workspace = workspace;
         this.skillPaths = skillPaths;
+        this.subagentsEnabled = subagentsEnabled;
         this.chatClient = build();
     }
 
@@ -101,7 +105,9 @@ public class MainChatClientProvider {
             String agentPrompt = readSystemPrompt();
             ToolCallingAdvisor toolCallAdvisor = toolSearchAdvisorProvider.getIfAvailable();
             if (toolCallAdvisor == null) {
-                toolCallAdvisor = ToolCallingAdvisor.builder().build();
+                toolCallAdvisor = ToolCallingAdvisor.builder()
+                        .toolCallingManager(UnknownToolCallbackResolver.toolCallingManager())
+                        .build();
             }
 
             builder.defaultAdvisors(new SimpleLoggerAdvisor())
@@ -115,13 +121,22 @@ public class MainChatClientProvider {
                             JavaClawTaskTool.builder().taskManager(taskManager).build(),
                             CheckListTool.builder().build(),
                             McpTool.builder().configurationManager(configurationManager).build(),
-                            FileSystemTools.builder().build(),
+                            // Only the workspace: the agent may be driven from WhatsApp and talks to a
+                            // cloud model, so it must not be able to read e.g. ~/.wacli or ~/.ssh.
+                            FileSystemTools.builder().allowedDirectory(workspace.getFilePath()).build(),
                             SmartWebFetchTool.builder(registry.getOrDefault(DEFAULT)).build())
                     .defaultAdvisors(toolCallAdvisor, MessageChatMemoryAdvisor.builder(chatMemory).build());
 
-            ToolCallback subagentTaskTool = buildSubagentTaskTool();
-            if (subagentTaskTool != null) {
-                builder.defaultTools(subagentTaskTool);
+            // Opt-in: agent-utils always adds built-in subagents (general-purpose, bash, ...) whose
+            // hard-coded tools include a shell and unrestricted file access, bypassing the main
+            // agent's restrictions.
+            if (subagentsEnabled) {
+                ToolCallback subagentTaskTool = buildSubagentTaskTool();
+                if (subagentTaskTool != null) {
+                    builder.defaultTools(subagentTaskTool);
+                }
+            } else {
+                log.info("Subagents are disabled (agent.subagents.enabled=false)");
             }
 
             autoDiscoveredTools.forEach(tool -> builder.defaultTools(tool.tool()));

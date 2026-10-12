@@ -1,1 +1,2 @@
 ai.javaclaw.channels.whatsapp.WhatsAppChannelAutoConfiguration
+ai.javaclaw.tools.whatsapp.WhatsAppToolsAutoConfiguration

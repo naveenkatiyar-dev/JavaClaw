@@ -6,6 +6,8 @@ dependencies {
     implementation project(':base')
     implementation 'org.springframework.boot:spring-boot-starter'
     implementation 'org.springframework.boot:spring-boot-starter-webmvc'
+    implementation 'org.springframework.ai:spring-ai-client-chat'
+    implementation 'org.springframework.modulith:spring-modulith-api'
 
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
     testImplementation 'org.springframework.boot:spring-boot-starter-json'

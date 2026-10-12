@@ -27,6 +27,9 @@ agent:
   workspace: file:./workspace/
   skills:
     paths: classpath:/META-INF/skills
+  subagents:
+    # Built-in subagents (general-purpose, bash, ...) get a shell and unrestricted file access.
+    enabled: false
 jobrunr:
   background-job-server:
     enabled: true

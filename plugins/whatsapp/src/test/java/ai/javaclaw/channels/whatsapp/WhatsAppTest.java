@@ -116,6 +116,7 @@ class WhatsAppTest {
                 "wacli", "send", "text",
                 "--to", CHAT_JID,
                 "--message", "hi there",
+                "--allow-self",
                 "--json"), TIMEOUT);
     }
 
@@ -211,6 +212,18 @@ class WhatsAppTest {
         // The chat is ours but the sender is not, which is what authorising by sender buys: in a
         // group, only the configured person can instruct the agent.
         whatsApp.onIncomingMessage(payload("msg-1", "run rm -rf /", "999@s.whatsapp.net", false));
+
+        assertThat(received).isEmpty();
+    }
+
+    @Test
+    void ignoresWhatTheConfiguredPersonTypesInAnotherChat() {
+        // With "Message Yourself" configured, the sender of everything you type anywhere is you.
+        // A message you send to a contact must not become an instruction for the agent.
+        whatsApp.onIncomingMessage(new WacliWebhookPayload("999@s.whatsapp.net", "msg-1", CHAT_JID, true,
+                "see you at the meeting", "Tester", TIMESTAMP));
+        whatsApp.onIncomingMessage(new WacliWebhookPayload("120363000000000000@g.us", "msg-2", CHAT_JID, true,
+                "see you all tomorrow", "Tester", TIMESTAMP));
 
         assertThat(received).isEmpty();
     }
