@@ -1,0 +1,311 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  JavaClaw on a single EC2 instance, isolated in its own VPC. No inbound ports:
+  shell access via SSM Session Manager, web UI via Cloudflare Tunnel. Deleting
+  this stack removes every resource it created.
+
+Parameters:
+  RepoUrl:
+    Type: String
+    Default: https://github.com/naveenkatiyar-dev/JavaClaw.git
+  RepoBranch:
+    Type: String
+    Default: main
+  InstanceType:
+    Type: String
+    Default: t4g.small
+    Description: ARM (Graviton). For x86 (e.g. t3.small) also set UbuntuAmi to the amd64 path.
+  UseSpot:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: >-
+      Spot is ~60-70% cheaper. Persistent request, so an interruption or a scheduled stop only
+      stops the instance; the disk (WhatsApp session, workspace) is kept.
+  VolumeSizeGiB:
+    Type: Number
+    Default: 20
+    MinValue: 20
+  ScheduleEnabled:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: Start and stop the instance daily (EventBridge Scheduler; free at this volume).
+  StartCron:
+    Type: String
+    Default: cron(0 7 * * ? *)
+  StopCron:
+    Type: String
+    Default: cron(0 23 * * ? *)
+  ScheduleTimezone:
+    Type: String
+    Default: Asia/Kolkata
+  KillSwitchUsd:
+    Type: Number
+    Default: 10
+    MinValue: 0
+    Description: >-
+      Monthly cost of this account (USD) at which a budget action stops the instance. 0 disables it.
+  AlertEmail:
+    Type: String
+    Default: ''
+    Description: Email for the kill-switch budget's alerts. The kill switch is created only when this is set.
+  ParameterPrefix:
+    Type: String
+    Default: /javaclaw
+    Description: SSM Parameter Store prefix holding this deployment's settings and secrets.
+  UbuntuAmi:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/canonical/ubuntu/server/24.04/stable/current/arm64/hvm/ebs-gp3/ami-id
+
+Conditions:
+  Spot: !Equals [!Ref UseSpot, 'true']
+  Scheduled: !Equals [!Ref ScheduleEnabled, 'true']
+  KillSwitch: !And
+    - !Not [!Equals [!Ref KillSwitchUsd, 0]]
+    - !Not [!Equals [!Ref AlertEmail, '']]
+
+Resources:
+  # --- Network: a dedicated VPC so nothing is shared with other projects -------------------
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.42.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-vpc' }]
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  GatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  # Public subnet for outbound internet only (GitHub, Gemini, WhatsApp, Cloudflare, SSM).
+  # A NAT gateway would cost ~USD 30+/month; the security group below allows no inbound traffic.
+  Subnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.42.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-public' }]
+
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+
+  DefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayAttachment
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  SubnetRouteTable:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref Subnet
+      RouteTableId: !Ref RouteTable
+
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: JavaClaw - no inbound, all outbound
+      VpcId: !Ref Vpc
+      SecurityGroupEgress:
+        - { IpProtocol: '-1', CidrIp: 0.0.0.0/0 }
+
+  # --- IAM: this instance may only read its own parameters ----------------------------------
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: read-own-parameters
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ['ssm:GetParameter', 'ssm:GetParameters', 'ssm:GetParametersByPath']
+                Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${ParameterPrefix}/*'
+              - Effect: Allow
+                Action: kms:Decrypt
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub 'ssm.${AWS::Region}.amazonaws.com'
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref InstanceRole]
+
+  # --- The instance ---------------------------------------------------------------------------
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        ImageId: !Ref UbuntuAmi
+        InstanceType: !Ref InstanceType
+        InstanceMarketOptions: !If
+          - Spot
+          - MarketType: spot
+            SpotOptions:
+              SpotInstanceType: persistent      # required for stop-on-interruption and for stop/start
+              InstanceInterruptionBehavior: stop
+          - !Ref AWS::NoValue
+        IamInstanceProfile: { Arn: !GetAtt InstanceProfile.Arn }
+        SecurityGroupIds: [!Ref SecurityGroup]
+        MetadataOptions:
+          HttpTokens: required          # IMDSv2 only
+          HttpPutResponseHopLimit: 1
+        BlockDeviceMappings:
+          - DeviceName: /dev/sda1
+            Ebs:
+              VolumeSize: !Ref VolumeSizeGiB
+              VolumeType: gp3
+              Encrypted: true
+              DeleteOnTermination: true
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            set -euo pipefail
+            exec > >(tee -a /var/log/javaclaw-bootstrap.log) 2>&1
+            apt-get update -y
+            apt-get install -y git
+            mkdir -p /opt/javaclaw
+            [ -d /opt/javaclaw/app/.git ] || git clone --branch '${RepoBranch}' '${RepoUrl}' /opt/javaclaw/app
+            cat > /etc/javaclaw.conf <<EOF
+            JAVACLAW_PARAM_PREFIX=${ParameterPrefix}
+            AWS_REGION=${AWS::Region}
+            EOF
+            bash /opt/javaclaw/app/deploy/aws/bootstrap.sh install
+
+  Instance:
+    Type: AWS::EC2::Instance
+    DependsOn: DefaultRoute
+    Properties:
+      SubnetId: !Ref Subnet
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}' }]
+
+  # --- Daily start/stop: compute and the public IPv4 address are billed only while running ------
+  SchedulerRole:
+    Type: AWS::IAM::Role
+    Condition: Scheduled
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: scheduler.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals: { aws:SourceAccount: !Ref AWS::AccountId }
+      Policies:
+        - PolicyName: start-stop-this-instance
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ['ec2:StartInstances', 'ec2:StopInstances']
+                Resource: !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/${Instance}'
+              - Effect: Allow   # starting an instance with an encrypted disk
+                Action: kms:CreateGrant
+                Resource: '*'
+                Condition:
+                  StringEquals: { kms:ViaService: !Sub 'ec2.${AWS::Region}.amazonaws.com' }
+                  Bool: { kms:GrantIsForAWSResource: 'true' }
+
+  StartSchedule:
+    Type: AWS::Scheduler::Schedule
+    Condition: Scheduled
+    Properties:
+      ScheduleExpression: !Ref StartCron
+      ScheduleExpressionTimezone: !Ref ScheduleTimezone
+      FlexibleTimeWindow: { Mode: 'OFF' }
+      Target:
+        Arn: arn:aws:scheduler:::aws-sdk:ec2:startInstances
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: !Sub '{"InstanceIds":["${Instance}"]}'
+
+  StopSchedule:
+    Type: AWS::Scheduler::Schedule
+    Condition: Scheduled
+    Properties:
+      ScheduleExpression: !Ref StopCron
+      ScheduleExpressionTimezone: !Ref ScheduleTimezone
+      FlexibleTimeWindow: { Mode: 'OFF' }
+      Target:
+        Arn: arn:aws:scheduler:::aws-sdk:ec2:stopInstances
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: !Sub '{"InstanceIds":["${Instance}"]}'
+
+  # --- Kill switch: stop the instance when this account's monthly cost reaches KillSwitchUsd -----
+  # Budget data lags by hours, so this caps damage, not spend. Org-wide SCP kill switch: deploy/aws/org.
+  KillSwitchRole:
+    Type: AWS::IAM::Role
+    Condition: KillSwitch
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: budgets.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals: { aws:SourceAccount: !Ref AWS::AccountId }
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSBudgetsActions_RolePolicyForResourceAdministrationWithSSM
+
+  KillSwitchBudget:
+    Type: AWS::Budgets::Budget
+    Condition: KillSwitch
+    Properties:
+      Budget:
+        BudgetName: !Sub '${AWS::StackName}-kill-switch'
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit: { Amount: !Ref KillSwitchUsd, Unit: USD }
+      NotificationsWithSubscribers:
+        - Notification: { NotificationType: ACTUAL, ComparisonOperator: GREATER_THAN, Threshold: 80, ThresholdType: PERCENTAGE }
+          Subscribers: [{ SubscriptionType: EMAIL, Address: !Ref AlertEmail }]
+
+  KillSwitchAction:
+    Type: AWS::Budgets::BudgetsAction
+    Condition: KillSwitch
+    Properties:
+      BudgetName: !Ref KillSwitchBudget
+      NotificationType: ACTUAL
+      ActionType: RUN_SSM_DOCUMENTS
+      ActionThreshold: { Type: PERCENTAGE, Value: 100 }
+      ApprovalModel: AUTOMATIC
+      ExecutionRoleArn: !GetAtt KillSwitchRole.Arn
+      Definition:
+        SsmActionDefinition:
+          Subtype: STOP_EC2_INSTANCES
+          Region: !Ref AWS::Region
+          InstanceIds: [!Ref Instance]
+      Subscribers: [{ Type: EMAIL, Address: !Ref AlertEmail }]
+
+Outputs:
+  InstanceId:
+    Value: !Ref Instance
+  Region:
+    Value: !Ref AWS::Region

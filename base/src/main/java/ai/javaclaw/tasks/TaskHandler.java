@@ -62,7 +62,7 @@ public class TaskHandler {
     // TODO: currently we lose the conversationId when moving to a channel. Should channel registry track this?
     private void notifyUser(String taskName, TaskResult result) {
         try {
-            Channel channel = channelRegistry.getLatestChannel();
+            Channel channel = channelRegistry.getNotificationChannel();
             ofNullable(channel).ifPresent(c -> {
                 if (completed == result.newStatus) {
                     channel.sendMessage("📋 Task '%s' completed:\n%s".formatted(taskName, result.feedback()));

@@ -121,4 +121,24 @@ class WhatsAppGroupDigestToolTest {
 
         assertThat(digest).isEqualTo("There are no unread WhatsApp group chats.");
     }
+
+    @Test
+    void stopsCallingTheModelOnceItsQuotaIsUsedUp() {
+        when(whatsApp.unreadGroups()).thenReturn(List.of(
+                new UnreadGroup("111@g.us", "Office", 42, false),
+                new UnreadGroup("222@g.us", "Family", 5, false)));
+        when(whatsApp.latestMessages(anyString(), anyInt())).thenReturn(MESSAGES);
+        List<Prompt> attempts = new ArrayList<>();
+        ChatClient exhausted = ChatClient.builder(prompt -> {
+            attempts.add(prompt);
+            throw new RuntimeException("429 . You exceeded your current quota");
+        }).build();
+
+        String digest = new WhatsAppGroupDigestTool(whatsApp, () -> exhausted).summarizeUnreadWhatsAppGroups(null, null);
+
+        assertThat(attempts).hasSize(1);
+        assertThat(digest)
+                .contains("## Office (42 unread)\n- (could not summarise: model quota used up)")
+                .contains("## Family (5 unread)\n- (skipped: model quota used up)");
+    }
 }

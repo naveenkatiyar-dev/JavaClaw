@@ -1,0 +1,58 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "OnlyMumbai",
+      "Effect": "Deny",
+      "NotAction": ["iam:*", "organizations:*", "account:*", "sts:*", "support:*", "budgets:*", "ce:*", "cur:*", "billing:*", "pricing:*", "health:*", "trustedadvisor:*", "route53:*", "route53domains:Get*", "route53domains:List*", "cloudfront:*", "waf:*", "wafv2:*", "globalaccelerator:Describe*", "shield:Describe*", "s3:GetAccountPublic*", "s3:ListAllMyBuckets", "s3:PutAccountPublic*", "notifications:*", "notifications-contacts:*", "sso:*", "identitystore:*", "kms:*", "access-analyzer:*", "tag:*", "ssm:GetParameter*"],
+      "Resource": "*",
+      "Condition": {"StringNotEquals": {"aws:RequestedRegion": ["ap-south-1"]}}
+    },
+    {
+      "Sid": "OnlySmallInstances",
+      "Effect": "Deny",
+      "Action": ["ec2:RunInstances", "ec2:ModifyInstanceAttribute"],
+      "Resource": "arn:aws:ec2:*:*:instance/*",
+      "Condition": {"StringNotLike": {"ec2:InstanceType": ["t4g.nano", "t4g.micro", "t4g.small", "t3.nano", "t3.micro", "t3.small", "t3a.nano", "t3a.micro", "t3a.small"]}}
+    },
+    {
+      "Sid": "SmallCheapDisks",
+      "Effect": "Deny",
+      "Action": ["ec2:CreateVolume", "ec2:RunInstances", "ec2:ModifyVolume"],
+      "Resource": "arn:aws:ec2:*:*:volume/*",
+      "Condition": {"NumericGreaterThan": {"ec2:VolumeSize": "30"}}
+    },
+    {
+      "Sid": "NoProvisionedIopsDisks",
+      "Effect": "Deny",
+      "Action": ["ec2:CreateVolume", "ec2:RunInstances", "ec2:ModifyVolume"],
+      "Resource": "arn:aws:ec2:*:*:volume/*",
+      "Condition": {"StringEquals": {"ec2:VolumeType": ["io1", "io2"]}}
+    },
+    {
+      "Sid": "SmallDatabasesOnly",
+      "Effect": "Deny",
+      "Action": ["rds:CreateDBInstance", "rds:ModifyDBInstance"],
+      "Resource": "*",
+      "Condition": {"StringNotLike": {"rds:DatabaseClass": ["db.t4g.micro", "db.t3.micro"]}}
+    },
+    {
+      "Sid": "NoExpensiveOrLongCommitments",
+      "Effect": "Deny",
+      "Action": [
+        "ec2:CreateNatGateway", "ec2:AllocateAddress", "ec2:AllocateHosts", "ec2:CreateClientVpnEndpoint", "ec2:CreateVpnConnection", "ec2:CreateTransitGateway",
+        "ec2:PurchaseReservedInstancesOffering", "ec2:PurchaseHostReservation", "ec2:PurchaseCapacityBlock", "ec2:CreateCapacityReservation", "savingsplans:CreateSavingsPlan",
+        "rds:PurchaseReservedDBInstancesOffering", "rds:CreateDBCluster", "elasticache:*", "memorydb:*", "redshift:*", "redshift-serverless:*", "es:*", "aoss:*",
+        "sagemaker:*", "eks:*", "elasticmapreduce:*", "kafka:*", "dms:*", "workspaces:*", "globalaccelerator:Create*", "shield:CreateSubscription",
+        "elasticloadbalancing:CreateLoadBalancer", "route53domains:RegisterDomain", "route53domains:TransferDomain", "aws-marketplace:Subscribe", "outposts:*", "snowball:*"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "StayInOrganization",
+      "Effect": "Deny",
+      "Action": ["organizations:LeaveOrganization", "account:CloseAccount"],
+      "Resource": "*"
+    }
+  ]
+}

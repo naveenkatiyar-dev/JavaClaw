@@ -13,6 +13,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -112,11 +113,32 @@ class WhatsAppChannelTest {
     }
 
     @Test
-    void swallowsAgentFailures() {
+    void tellsTheUserWhenTheAgentFails() {
         when(agent.respondTo(ALLOWED_JID, "hello")).thenThrow(new RuntimeException("boom"));
 
         channel.onMessage(ALLOWED_JID, "hello");
 
-        verify(whatsApp, never()).sendMessage(anyString());
+        verify(whatsApp).sendMessage(WhatsAppChannel.GENERIC_FAILURE_REPLY);
+    }
+
+    @Test
+    void tellsTheUserWhenTheModelQuotaIsUsedUp() {
+        RuntimeException quota = new RuntimeException("Failed to generate content",
+                new IllegalStateException("429 . You exceeded your current quota, please check your plan and billing details."));
+        when(agent.respondTo(ALLOWED_JID, "hello")).thenThrow(quota);
+
+        channel.onMessage(ALLOWED_JID, "hello");
+
+        verify(whatsApp).sendMessage(WhatsAppChannel.QUOTA_EXCEEDED_REPLY);
+    }
+
+    @Test
+    void survivesWhenEvenTheFailureReplyCannotBeSent() {
+        when(agent.respondTo(ALLOWED_JID, "hello")).thenThrow(new RuntimeException("boom"));
+        doThrow(new RuntimeException("wacli down")).when(whatsApp).sendMessage(anyString());
+
+        channel.onMessage(ALLOWED_JID, "hello");
+
+        verify(whatsApp).sendMessage(WhatsAppChannel.GENERIC_FAILURE_REPLY);
     }
 }

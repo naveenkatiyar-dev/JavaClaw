@@ -6,13 +6,18 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.memory.ChatMemory;
+import org.springframework.ai.chat.messages.AssistantMessage;
 import reactor.core.publisher.Flux;
 
 import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -25,16 +30,17 @@ class DefaultAgentTest {
     @Mock ChatClient.StreamResponseSpec streamSpec;
     @Mock ChatClient.CallResponseSpec callSpec;
     @Mock ResponseListener listener;
+    @Mock ChatMemory chatMemory;
 
     DefaultAgent agent;
 
     @BeforeEach
     @SuppressWarnings("unchecked")
     void setUp() {
-        agent = new DefaultAgent(chatClient);
+        agent = new DefaultAgent(chatClient, chatMemory);
         when(chatClient.prompt("hello")).thenReturn(requestSpec);
         when(requestSpec.advisors(any(Consumer.class))).thenReturn(requestSpec);
-        when(requestSpec.stream()).thenReturn(streamSpec);
+        lenient().when(requestSpec.stream()).thenReturn(streamSpec);
     }
 
     @Test
@@ -64,6 +70,17 @@ class DefaultAgentTest {
         inOrder.verify(listener).onToken("Hello ");
         inOrder.verify(listener).onError("boom");
         verify(listener, never()).onComplete();
+        verify(chatMemory).add("web", new AssistantMessage(DefaultAgent.FAILED_TURN_NOTE));
+    }
+
+    @Test
+    void closesTheTurnInMemoryWhenTheBlockingCallFails() {
+        // Otherwise the unanswered question is still open and the next turn answers it too.
+        when(requestSpec.call()).thenThrow(new RuntimeException("429 quota"));
+
+        assertThatThrownBy(() -> agent.respondTo("whatsapp", "hello")).hasMessage("429 quota");
+
+        verify(chatMemory).add("whatsapp", new AssistantMessage(DefaultAgent.FAILED_TURN_NOTE));
     }
 
     @Test
@@ -79,5 +96,6 @@ class DefaultAgentTest {
         inOrder.verify(listener).onToken("full response");
         inOrder.verify(listener).onComplete();
         verify(listener, never()).onError(any());
+        verify(chatMemory, never()).add(anyString(), any(AssistantMessage.class));
     }
 }

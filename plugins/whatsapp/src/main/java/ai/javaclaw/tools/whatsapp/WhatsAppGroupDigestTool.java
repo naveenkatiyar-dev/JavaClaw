@@ -3,6 +3,7 @@ package ai.javaclaw.tools.whatsapp;
 import ai.javaclaw.channels.whatsapp.WhatsApp;
 import ai.javaclaw.channels.whatsapp.WhatsApp.Message;
 import ai.javaclaw.channels.whatsapp.WhatsApp.UnreadGroup;
+import ai.javaclaw.llm.ModelErrors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
@@ -93,9 +94,22 @@ public class WhatsAppGroupDigestTool {
         }
 
         StringBuilder digest = new StringBuilder();
+        boolean quotaExceeded = false;
         for (UnreadGroup group : summarised) {
+            String summary;
+            if (quotaExceeded) {
+                summary = "- (skipped: model quota used up)";
+            } else {
+                try {
+                    summary = summarise(group);
+                } catch (QuotaExceededException e) {
+                    // Every further call would fail the same way and only burn more requests.
+                    quotaExceeded = true;
+                    summary = "- (could not summarise: model quota used up)";
+                }
+            }
             digest.append("## ").append(group.name()).append(" (").append(group.unreadCount()).append(" unread)\n")
-                    .append(summarise(group)).append("\n\n");
+                    .append(summary).append("\n\n");
         }
         if (summarised.isEmpty()) {
             digest.append("No unread WhatsApp groups with more than ").append(MAX_SMALL_GROUP_SIZE).append(" members.\n");
@@ -130,8 +144,14 @@ public class WhatsAppGroupDigestTool {
             return summary == null || summary.isBlank() ? "- (no summary)" : summary.strip();
         } catch (RuntimeException e) {
             LOGGER.warn("Could not summarise WhatsApp group '{}'", group.name(), e);
+            if (ModelErrors.isQuotaExceeded(e)) {
+                throw new QuotaExceededException();
+            }
             return "- (could not summarise: " + e.getMessage() + ")";
         }
+    }
+
+    private static class QuotaExceededException extends RuntimeException {
     }
 
     static String transcript(List<Message> messages) {
